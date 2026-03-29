@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# Step 1: Add Kerberos DNS mapping to /etc/hosts
+echo ":hammer_and_wrench: Step 1: Updating /etc/hosts with krb.rfx.directory..."
+if grep -q "krb.rfx.directory" /etc/hosts; then
+  echo ":information_source: Entry already exists in /etc/hosts. Skipping."
+else
+  echo "34.47.237.179 krb.rfx.directory" | sudo tee -a /etc/hosts > /dev/null || {
+    echo ":x: Failed to update /etc/hosts."
+    exit 1
+  }
+  echo ":white_check_mark: /etc/hosts updated with krb.rfx.directory"
+fi
+
+# Step 2: Ping the Kerberos server
+echo ":repeat: Pinging Kerberos server..."
+ping -c 3 krb.rfx.directory || {
+  echo ":x: Cannot reach krb.rfx.directory. Check your network or DNS."
+  exit 1
+}
+
+# Step 3: Install Kerberos packages without GUI prompts
+echo ":package: Installing Kerberos packages silently..."
+echo "krb5-config krb5-config/default_realm string RFX.DIRECTORY" | sudo debconf-set-selections
+sudo DEBIAN_FRONTEND=noninteractive apt update
+sudo DEBIAN_FRONTEND=noninteractive apt install -y krb5-user libpam-krb5 || {
+  echo ":x: Package installation failed."
+  exit 1
+}
+
+# Step 4: Configure /etc/krb5.conf
+echo ":hammer_and_wrench: Configuring /etc/krb5.conf..."
+sudo bash -c 'cat > /etc/krb5.conf' <<EOF
+[libdefaults]
+    default_realm = RFX.DIRECTORY
+    dns_lookup_realm = true
+    dns_lookup_kdc = true
+    rdns = false
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+    forwardable = true
+    kdc_timesync = 1
+    ccache_type = 4
+    proxiable = true
+
+[realms]
+    RFX.DIRECTORY = {
+        kdc = krb.rfx.directory
+        admin_server = krb.rfx.directory
+    }
+
+[domain_realm]
+    .rfx.directory = RFX.DIRECTORY
+    rfx.directory = RFX.DIRECTORY
+EOF
+
+echo ":white_check_mark: Akku config updated."
+
+# Step 5: Get Akku username
+echo ""
+echo ":closed_lock_with_key: Please enter your Akku username (without @RFX.DIRECTORY):"
+read KRB_USERNAME
+KRB_REALM="RFX.DIRECTORY"
+KRB_USER="$KRB_USERNAME@$KRB_REALM"
+
+# Step 6: Authenticate using kinit
+echo ":hourglass_flowing_sand: Authenticating using kinit for $KRB_USER..."
+kinit "$KRB_USER" || {
+  echo ":x: Authentication failed. Check your realm, username, or password."
+  exit 1
+}
+
+echo ":white_check_mark: Akku ticket obtained successfully!"
+klist
+
+# Step 7: Prompt for Linux user creation
+echo ""
+echo ":bust_in_silhouette: Enter the Linux username you want to create (:warning: should match AKKU username, e.g., refex):"
+read NEW_USER
+
+if id "$NEW_USER" &>/dev/null; then
+  echo ":information_source: User '$NEW_USER' already exists. Skipping creation."
+else
+  echo ":adult: Creating user '$NEW_USER'..."
+  sudo adduser --disabled-password --gecos "" "$NEW_USER" || {
+    echo ":x: Failed to create user '$NEW_USER'."
+    exit 1
+  }
+
+  sudo usermod -aG sudo "$NEW_USER" || {
+    echo ":warning: User created, but failed to add '$NEW_USER' to sudo group."
+    exit 1
+  }
+
+  echo ":white_check_mark: User '$NEW_USER' created and added to sudo group."
+fi
